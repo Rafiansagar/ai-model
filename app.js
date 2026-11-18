@@ -1,14 +1,16 @@
-// Plain (non-module) script so the page also works when opened straight from disk (file://),
-// where Chrome blocks <script type="module" src>. The library is pulled in with a dynamic import.
+// The page: tools, photo, results, and the safety watchdog. The model itself loads and runs in
+// worker.js, so a task can be cut off at any moment; storage.js is shared with the worker.
 (() => {
-const LIB = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1';
-let Florence2ForConditionalGeneration, AutoProcessor, RawImage;
 
 // Two sizes of the same model; both know the same 15 tasks. Large is ~3x the download and slower,
-// but more accurate. Download sizes (MB) per page setting, from the files on Hugging Face.
+// but more accurate. Sizes (MB) per page setting, from the files on Hugging Face:
+//   mb      the whole download
+//   biggest the largest single file, which the GPU must hold in one piece
 const MODELS = {
-  base: { id: 'onnx-community/Florence-2-base-ft', name: 'Base', mb: { webgpu: 357, wasm: 667, fp32: 1086 } },
-  large: { id: 'onnx-community/Florence-2-large-ft', name: 'Large', mb: { webgpu: 1096, wasm: 2075, fp32: 3295 } },
+  base: { id: 'onnx-community/Florence-2-base-ft', name: 'Base',
+    mb: { webgpu: 357, wasm: 667, fp32: 1086 }, biggest: { webgpu: 184, wasm: 367, fp32: 388 } },
+  large: { id: 'onnx-community/Florence-2-large-ft', name: 'Large',
+    mb: { webgpu: 1096, wasm: 2075, fp32: 3295 }, biggest: { webgpu: 727, wasm: 1454, fp32: 1454 } },
 };
 const $ = (id) => document.getElementById(id);
 const which = () => MODELS[$('model').value] || MODELS.base;
@@ -18,8 +20,7 @@ function sizeLabel(m = which(), device = $('device').value, precision = $('dtype
   return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`;
 }
 
-let model = null, processor = null;
-let loadedKey = null, loading = false;
+let loadedKey = null, loading = false; // what the worker has loaded, as "model|device|precision"
 let imageSrc = null;
 let loadedOn = '';
 let busy = false, rerun = false;
@@ -37,7 +38,7 @@ function setCaption(text, cls = '') {
 }
 
 function onProgress(p) {
-  if (p.status !== 'progress' || !p.file) return;
+  if (!p || p.status !== 'progress' || !p.file) return;
   progress[p.file] = p.progress;
   const vals = Object.values(progress);
   $('rail').hidden = false;
@@ -51,82 +52,134 @@ function onProgress(p) {
 }
 
 // ---------- saved-model check ----------
-// Transformers.js keeps downloaded files in the browser's Cache Storage under this name
-// (DevTools > Application > Cache storage), keyed by their Hugging Face URL.
-// We look there first and only download what's missing.
-//
-// Cache Storage (and WebGPU) only exist on secure origins: https://, localhost, 127.0.0.1.
-// On a plain-http address such as http://192.168.1.222 the files go into IndexedDB instead
-// (DevTools > Application > IndexedDB > caption-model), through the same match/put interface.
-const CACHE = 'transformers-cache';
-const IDB_NAME = 'caption-model';
+// Where files are saved, and the store itself, live in storage.js (shared with worker.js).
 const OLD_BUCKET = 'florence-2-model'; // briefly used by an earlier version; moved back on open
 const PARTS = ['embed_tokens', 'vision_encoder', 'encoder_model', 'decoder_model_merged'];
 const SUFFIX = { fp32: '', fp16: '_fp16', q8: '_quantized', q4: '_q4' };
-const PREFS = 'caption-test:engine:v2'; // v2: WebGPU became the default, so older saved choices are ignored
-const isFile = location.protocol === 'file:';
-const useCacheApi = !isFile && window.isSecureContext && 'caches' in window;
-const canSave = !isFile && (useCacheApi || 'indexedDB' in window);
-
-// A Cache-like store on IndexedDB: match / put / keys / clear, keyed by the file's URL.
-function idbStore() {
-  let dbp;
-  const db = () => (dbp ??= new Promise((resolve, reject) => {
-    const r = indexedDB.open(IDB_NAME, 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('files');
-    r.onsuccess = () => resolve(r.result);
-    r.onerror = () => reject(r.error);
-  }));
-  const tx = async (mode, fn) => {
-    const d = await db();
-    return new Promise((resolve, reject) => {
-      const t = d.transaction('files', mode);
-      const req = fn(t.objectStore('files'));
-      t.oncomplete = () => resolve(req?.result);
-      t.onerror = () => reject(t.error);
-      t.onabort = () => reject(t.error);
-    });
-  };
-  const key = (r) => (typeof r === 'string' ? r : r.url);
-  return {
-    async match(r) {
-      const rec = await tx('readonly', (s) => s.get(key(r)));
-      if (!rec) return undefined;
-      return new Response(rec.blob, { headers: {
-        'content-type': rec.type || 'application/octet-stream',
-        'content-length': String(rec.blob.size),
-      } });
-    },
-    async put(r, res) {
-      const blob = await res.blob();
-      await tx('readwrite', (s) => s.put({ blob, type: res.headers.get('content-type') }, key(r)));
-    },
-    async keys() {
-      return (await tx('readonly', (s) => s.getAllKeys())).map((url) => ({ url }));
-    },
-    async size() {
-      const recs = await tx('readonly', (s) => s.getAll()); // Blob handles only, not their bytes
-      return recs.reduce((n, rec) => n + rec.blob.size, 0);
-    },
-    async clear() { await tx('readwrite', (s) => s.clear()); },
-  };
-}
-
-let store = null;
-async function getStore() {
-  if (!canSave) return null;
-  return (store ??= useCacheApi ? await caches.open(CACHE) : idbStore());
-}
+// v3: choices saved by a since-dropped version used other model names ("florence2-base"),
+// which left the Model menu blank, so older saved choices are ignored.
+const PREFS = 'caption-test:engine:v3';
 
 // WebGPU support, checked once on page open.
-let gpuOk = false, hasF16 = false;
+let gpuOk = false, hasF16 = false, gpuMaxBuffer = 0;
 async function probeGPU() {
   try {
     const adapter = await navigator.gpu?.requestAdapter();
     if (!adapter) return;
     gpuOk = true;
     hasF16 = adapter.features.has('shader-f16'); // half-precision shaders; most desktop GPUs have it
+    gpuMaxBuffer = adapter.limits.maxBufferSize;  // largest single piece the GPU accepts
   } catch {}
+}
+
+// ---------- safety: the watchdog ----------
+// Every load and every task runs in the background worker. The watchdog terminates the worker,
+// which stops the work at once and frees its memory and GPU, when:
+//   - a task runs longer than its time limit;
+//   - a download or load makes no progress for a while;
+//   - the computer stops responding (this page's own timer falls seconds behind);
+//   - the worker crashes (usually out of memory).
+// Pressing Stop does the same. Change the limits here.
+const GUARD = {
+  runMs: { gpu: 90_000, cpu: 240_000 }, // one task; doubled for the large model
+  loadStallMs: 90_000,                  // download or load with no progress at all
+  loadMaxMs: 20 * 60_000,               // one download or load, start to finish
+  lateMs: 4_000,                        // the page's timer this late = the computer is struggling
+  lateStrikes: 2,                       // ...this many times in a row (or once by twice as much)
+};
+
+class Stopped extends Error {
+  constructor(reason, message) { super(message); this.reason = reason; }
+}
+
+let worker = null, job = null, seq = 0;
+
+function startWorker() {
+  try { worker = new Worker('worker.js?v=1'); } catch { worker = null; return; }
+  worker.onmessage = ({ data }) => {
+    if (!job || data.id !== job.id) return;
+    if (data.type === 'beat') { job.beat = performance.now(); job.onBeat?.(data.p); return; }
+    const j = job;
+    job = null;
+    if (data.type === 'done') j.resolve(data.result);
+    else j.reject(new Error(data.message));
+  };
+  worker.onerror = (e) => { e.preventDefault?.(); cut('crash'); };
+}
+
+// Send one job to the worker. kind: 'load' or 'run'; what: words for messages.
+function call(type, payload, { kind, what, onBeat, limitMs } = {}) {
+  if (!worker) startWorker();
+  if (!worker) return Promise.reject(new Error('This browser couldn’t start the background worker. Open the page through the web server.'));
+  const id = ++seq;
+  return new Promise((resolve, reject) => {
+    const now = performance.now();
+    job = { id, kind, what, onBeat, limitMs, resolve, reject, start: now, beat: now };
+    worker.postMessage({ id, type, ...payload });
+  });
+}
+
+function explain(reason, j) {
+  const what = j?.what ?? 'The task';
+  switch (reason) {
+    case 'user': return `Stopped. ${what} was cancelled.`;
+    case 'slow': return `Stopped: ${what} ran longer than ${Math.round(j.limitMs / 1000)} s, so it was cut to protect the computer. Try the base model, Mixed precision, or a simpler task.`;
+    case 'stall': return `Stopped: ${what} made no progress for ${GUARD.loadStallMs / 1000} s. Check the connection and try again; finished files stay saved.`;
+    case 'freeze': return `Stopped: the computer stopped responding while ${what.toLowerCase()} ran, so it was cut. Try the base model or Mixed precision, or close other heavy apps.`;
+    case 'crash': return `Stopped: the model crashed, most likely out of memory, and was unloaded. Try the base model or Mixed precision.`;
+    default: return 'Stopped.';
+  }
+}
+
+// Cut whatever is running: terminate the worker (the model goes with it) and say why.
+function cut(reason) {
+  if (worker) worker.terminate();
+  worker = null;
+  loadedKey = null;
+  loading = false;
+  const j = job;
+  job = null;
+  if (j) j.reject(new Stopped(reason, explain(reason, j)));
+  else if (reason === 'crash') setStatus(explain('crash'), 'err');
+  refreshButton();
+}
+
+// The watchdog itself: checks twice a second.
+let lastTick = performance.now(), strikes = 0;
+setInterval(() => {
+  const now = performance.now();
+  const late = now - lastTick - 500;
+  lastTick = now;
+  if (!job) { strikes = 0; return; }
+  // Background tabs get their timers slowed on purpose; that isn't the computer struggling.
+  if (document.visibilityState === 'visible') {
+    if (late > GUARD.lateMs * 2) return cut('freeze');
+    if (late > GUARD.lateMs) { if (++strikes >= GUARD.lateStrikes) return cut('freeze'); } else strikes = 0;
+  }
+  const ran = now - job.start, quiet = now - job.beat;
+  if (job.kind === 'load' && quiet > GUARD.loadStallMs) return cut('stall');
+  if (job.limitMs && ran > job.limitMs) return cut('slow');
+}, 500);
+document.addEventListener('visibilitychange', () => { lastTick = performance.now(); strikes = 0; });
+
+function runLimit() {
+  const ms = $('device').value === 'wasm' ? GUARD.runMs.cpu : GUARD.runMs.gpu;
+  return loadedKey?.startsWith('large') ? ms * 2 : ms;
+}
+
+// Before loading: can this computer take it? Returns { block } (won't work), { warn } (might
+// struggle; ask first) or {}.
+function preflight(m, device, precision) {
+  const key = precision === 'fp32' ? 'fp32' : device;
+  if (device === 'webgpu' && gpuMaxBuffer && m.biggest[key] * 1e6 > gpuMaxBuffer) {
+    return { block: `Your GPU can't hold Florence-2 ${m.name.toLowerCase()}'s largest part (${m.biggest[key]} MB; its limit is ${Math.round(gpuMaxBuffer / 1e6)} MB). Switch Device to CPU, or Model to Base.` };
+  }
+  const ram = navigator.deviceMemory; // approximate GB; browsers report at most 8
+  const needGB = m.mb[key] * 1.5 / 1000;
+  if (ram && needGB > ram * 0.6) {
+    return { warn: `This computer reports about ${ram} GB of memory, and Florence-2 ${m.name.toLowerCase()} with these settings may use around ${needGB.toFixed(1)} GB. If the computer can't keep up, the task is stopped automatically. Load it anyway?` };
+  }
+  return {};
 }
 
 // Florence-2 is four ONNX files; keep the image side at full/half precision, quantize the text side.
@@ -157,6 +210,40 @@ async function moveBackFromBucket() {
       if (res) await to.put(req, res);
     }
     await navigator.storageBuckets.delete(OLD_BUCKET);
+  } catch (err) { console.error(err); }
+}
+
+// A later, since-dropped version of this page filed the model under its pinned commit
+// (".../resolve/<40-hex commit>/...") instead of ".../resolve/main/...". Move those copies back
+// under "main" so this version finds them instead of downloading again.
+async function moveBackFromPinned() {
+  try {
+    const s = await getStore();
+    if (!s) return;
+    const pinned = /^(.*\/onnx-community\/Florence-2-(?:base|large)-ft\/resolve\/)[0-9a-f]{40}(\/.*)$/;
+    const reqs = (await s.keys()).filter((r) => pinned.test(r.url));
+    if (!reqs.length) return;
+    setStatus('Moving the saved model back where this page looks for it (one time)…');
+    for (const req of reqs) {
+      const [, head, tail] = req.url.match(pinned);
+      const main = `${head}main${tail}`;
+      if (!(await s.match(main))) {
+        const res = await s.match(req.url);
+        if (res) await s.put(main, res);
+      }
+      await s.delete(req.url);
+    }
+  } catch (err) { console.error(err); }
+}
+
+// This page only uses Florence-2. Remove anything else a since-dropped version saved in the same
+// store (for example the background remover's files), so it stops counting toward storage.
+async function removeOtherModels() {
+  try {
+    const s = await getStore();
+    if (!s) return;
+    const ours = /\/onnx-community\/Florence-2-(?:base|large)-ft\//;
+    for (const req of await s.keys()) if (!ours.test(req.url)) await s.delete(req.url);
   } catch (err) { console.error(err); }
 }
 
@@ -196,7 +283,7 @@ async function showStorage() {
 // otherwise "Load saved model" or "Download model (size)" for the new choice.
 async function refreshButton() {
   if (loading) return false;
-  if (model && engineKey() === loadedKey) {
+  if (loadedKey && engineKey() === loadedKey) {
     $('load').textContent = 'Model loaded';
     $('load').disabled = true;
     return true;
@@ -213,41 +300,30 @@ function remember() {
   } catch {}
 }
 
-async function loadModel(fromSaved) {
-  loading = true;
-  $('load').disabled = true;
+async function loadModel(fromSaved, { auto = false } = {}) {
   const m = which(), device = $('device').value, precision = $('dtype').value;
+  // Safety check first: refuse what can't work, ask about what might struggle.
+  const pf = preflight(m, device, precision);
+  if (pf.block) { setStatus(pf.block, 'err'); return; }
+  if (pf.warn) {
+    if (auto) { setStatus(`${pf.warn.replace(/ Load it anyway\?$/, '')} Press the button to load it.`); return; }
+    if (!confirm(pf.warn)) { setStatus('Not loaded. Pick a lighter setting, or press the button again to load anyway.'); return; }
+  }
+  loading = true;
+  $('load').textContent = 'Stop';
+  $('load').disabled = false;
   setStatus(fromSaved ? `Loading Florence-2 ${m.name.toLowerCase()} from this browser…`
     : `Downloading Florence-2 ${m.name.toLowerCase()} (${sizeLabel(m, device, precision)}). This happens once…`);
-  // Free the one that's running first (GPU memory), after any caption in progress finishes.
+  // Let any task in progress finish first; the worker swaps the old model out itself.
   while (busy) await new Promise((r) => setTimeout(r, 100));
-  if (model) {
-    const old = model;
-    model = processor = null;
-    loadedKey = null;
-    try { await old.dispose?.(); } catch {}
-  }
+  loadedKey = null;
   for (const k in progress) delete progress[k];
   const t0 = performance.now();
   try {
-    const lib = await import(LIB);
-    ({ Florence2ForConditionalGeneration, AutoProcessor, RawImage } = lib);
-    lib.env.allowLocalModels = false;
-    if (useCacheApi) {
-      lib.env.useBrowserCache = true; // read from / write to Cache Storage ("transformers-cache")
-    } else {
-      lib.env.useBrowserCache = false;
-      if (canSave) { // plain http: same thing, through the IndexedDB store
-        lib.env.useCustomCache = true;
-        lib.env.customCache = await getStore();
-      }
-    }
-    [model, processor] = await Promise.all([
-      Florence2ForConditionalGeneration.from_pretrained(m.id, {
-        device, dtype: dtypeFor(device, precision), progress_callback: fromSaved ? undefined : onProgress,
-      }),
-      AutoProcessor.from_pretrained(m.id),
-    ]);
+    await call('load', { repo: m.id, device, dtype: dtypeFor(device, precision) }, {
+      kind: 'load', what: fromSaved ? 'Loading the model' : 'Downloading the model',
+      onBeat: fromSaved ? null : onProgress, limitMs: GUARD.loadMaxMs,
+    });
     remember();
     loadedKey = `${$('model').value}|${device}|${precision}`;
     loadedOn = `${m.name}, ${$('device').selectedOptions[0].text}, ${precision}`;
@@ -267,9 +343,15 @@ async function loadModel(fromSaved) {
     else setCaption('Add a photo to start.', 'waiting');
   } catch (err) {
     console.error(err);
-    model = processor = null;
     loadedKey = null;
     loading = false;
+    $('rail').hidden = true;
+    $('files').innerHTML = '';
+    if (err instanceof Stopped) { // the watchdog or Stop cut it; don't retry on our own
+      setStatus(err.message, err.reason === 'user' ? '' : 'err');
+      await refreshButton();
+      return;
+    }
     // GPU path failed (driver, out of GPU memory, blocked WebGPU). Fall back to the CPU only when
     // that version is already saved; never start a surprise multi-GB download.
     if (device === 'webgpu' && await isSaved('wasm', precision, m)) {
@@ -286,6 +368,7 @@ async function loadModel(fromSaved) {
 
 $('engine').onsubmit = async (e) => {
   e.preventDefault();
+  if (loading) { cut('user'); return; } // the button reads "Stop" while loading
   loadModel(await isSaved($('device').value, $('dtype').value));
 };
 // Changing a menu doesn't drop the running model; the button offers to load the new choice.
@@ -297,7 +380,8 @@ $('forget').onclick = async () => {
     if (useCacheApi) { await caches.delete(CACHE); store = null; }
     else await (await getStore()).clear();
   } catch (err) { console.error(err); }
-  model = null; processor = null; loadedKey = null;
+  if (worker) { worker.terminate(); worker = null; } // free the memory too
+  loadedKey = null;
   await refreshButton();
   setStatus('Saved model removed. Download it again to use the tools.');
   showStorage();
@@ -307,7 +391,13 @@ $('forget').onclick = async () => {
 (async () => {
   try {
     const p = JSON.parse(localStorage.getItem(PREFS) || 'null');
-    if (p) { $('model').value = p.model || 'base'; $('device').value = p.device; $('dtype').value = p.dtype; }
+    if (p) {
+      // Only accept values the menus actually offer, so a menu is never left blank.
+      const ok = (sel, v) => [...$(sel).options].some((o) => o.value === v);
+      if (ok('model', p.model)) $('model').value = p.model;
+      if (ok('device', p.device)) $('device').value = p.device;
+      if (ok('dtype', p.dtype)) $('dtype').value = p.dtype;
+    }
   } catch {}
   await probeGPU();
   if (!gpuOk) {
@@ -323,9 +413,13 @@ $('forget').onclick = async () => {
   }
   setStatus('Checking this browser for a saved model…');
   await moveBackFromBucket();
+  await moveBackFromPinned();
+  await removeOtherModels();
   const saved = await refreshButton();
   showStorage();
-  if (saved) loadModel(true);
+  $('guard').textContent = `Safety on: a task stops by itself if it runs over ${GUARD.runMs.gpu / 1000} s on the GPU `
+    + `(${GUARD.runMs.cpu / 60000} min on the CPU), stalls, or the computer stops responding. Press Stop to end it yourself.`;
+  if (saved) loadModel(true, { auto: true });
   else if ($('device').value === 'webgpu' && await isSaved('wasm', $('dtype').value)) {
     setStatus(`The GPU version isn't saved yet. Download it once (${sizeLabel()}) for faster results, or switch Device to CPU to use the saved CPU version.`);
   } else setStatus(`Florence-2 ${which().name.toLowerCase()} isn't saved in this browser yet. Download it once (${sizeLabel()}) and it stays here.`);
@@ -372,7 +466,7 @@ const TOOL_PREF = 'caption-test:tool';
 const SVGNS = 'http://www.w3.org/2000/svg';
 
 let tool = ALL[0];
-let rawImage = null, rawFor = null; // decoded photo for the model, reused between runs
+
 let area = null;                    // [x1, y1, x2, y2] in photo pixels
 let finds = [];                     // shapes from the last run
 
@@ -427,7 +521,7 @@ $('ask').onsubmit = (e) => { e.preventDefault(); run(); };
 // ---------- photo ----------
 function setImage(src) {
   imageSrc = src;
-  rawImage = null;
+
   area = null;
   $('photo').src = src;
   $('stage').hidden = false;
@@ -436,7 +530,7 @@ function setImage(src) {
   $('drop').classList.toggle('drawing', !!tool.area);
   $('time').textContent = $('ran').textContent = $('size').textContent = '–';
   clearResult();
-  if (!model) setCaption('Photo ready. Load the model to start.', 'waiting');
+  if (!loadedKey) setCaption('Photo ready. Load the model to start.', 'waiting');
   else if (tool.area) setCaption('Drag on the photo to mark an area.', 'waiting');
   else run();
 }
@@ -670,7 +764,7 @@ function summary(n) {
 
 // ---------- running a tool ----------
 async function run() {
-  if (!model || !imageSrc) return;
+  if (!loadedKey || !imageSrc) return;
   if (tool.ask && !$('askInput').value.trim()) {
     setCaption(`Type ${tool.ask.toLowerCase()}, then press Enter.`, 'waiting');
     $('askInput').focus();
@@ -679,7 +773,7 @@ async function run() {
   if (tool.area && !area) { setCaption('Drag on the photo to mark an area.', 'waiting'); return; }
   if (busy) { rerun = true; return; } // a new photo or tool arrived mid-run; do it next
   busy = true;
-  $('run').disabled = true;
+  $('run').textContent = 'Stop'; // pressing it cuts the task
   const t = tool;
   finds = [];
   listFinds();
@@ -688,14 +782,14 @@ async function run() {
   setCaption('Looking at the photo…', 'waiting');
   const t0 = performance.now();
   try {
-    if (rawFor !== imageSrc || !rawImage) { rawImage = await RawImage.fromURL(imageSrc); rawFor = imageSrc; }
-    const { width: w, height: h } = rawImage;
+    const photo = $('photo');
     let prompt = t.id;
     if (t.ask) prompt += $('askInput').value.trim();
-    if (t.area) prompt += areaTokens(w, h);
-    const inputs = await processor(rawImage, prompt);
-    const ids = await model.generate({ ...inputs, max_new_tokens: t.tokens ?? 1024 });
-    const raw = processor.batch_decode(ids, { skip_special_tokens: false })[0];
+    if (t.area) prompt += areaTokens(photo.naturalWidth, photo.naturalHeight);
+    // Runs in the background worker, under the watchdog's time limit.
+    const { raw, width: w, height: h } = await call('run', {
+      image: new URL(imageSrc, location.href).href, prompt, maxTokens: t.tokens ?? 1024,
+    }, { kind: 'run', what: t.verb.replace(/^\w/, (c) => c.toUpperCase()), limitMs: runLimit() });
     if (t !== tool) return; // tool changed mid-run; the queued run takes over
 
     if (t.kind === 'text') {
@@ -718,14 +812,15 @@ async function run() {
     $('size').textContent = `${w} × ${h} px`;
   } catch (err) {
     console.error(err);
+    if (err instanceof Stopped) { setCaption(err.message, err.reason === 'user' ? 'waiting' : 'error'); return; }
     setCaption(`Couldn't read that photo: ${err.message}. If it's a URL, the site may block other pages from loading it; download it and choose the file instead.`, 'error');
   } finally {
     busy = false;
-    $('run').disabled = false;
+    $('run').textContent = tool.verb;
     if (rerun) { rerun = false; run(); }
   }
 }
-$('run').onclick = run;
+$('run').onclick = () => (busy ? cut('user') : run());
 
 // Start on the last tool used (short caption the first time).
 let startTool = ALL[0].id;

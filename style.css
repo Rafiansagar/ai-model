@@ -94,6 +94,8 @@ button:disabled { opacity: .45; cursor: default; }
 
 .storage { margin: 4px 0 0; font-size: 12px; color: var(--wall-muted); }
 .storage:has(#storage:empty) { display: none; }
+.guard { margin: 4px 0 0; font-size: 12px; color: var(--wall-muted); }
+.guard:empty { display: none; }
 .forget {
   height: auto; padding: 0; margin-left: 6px;
   background: none; color: var(--wall-ink);
