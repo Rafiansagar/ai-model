@@ -3,171 +3,81 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Image Caption Test</title>
-<style>
-  :root {
-    --bg: #f6f6f4; --card: #fff; --text: #1d1d1b; --muted: #6b6b66;
-    --line: #e2e2dd; --accent: #2f5bd3; --ok: #1f7a46; --err: #b3261e;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #151514; --card: #1f1f1d; --text: #ededea; --muted: #9a9a94;
-      --line: #33332f; --accent: #7d9cff; --ok: #5fc88b; --err: #ff8a80;
-    }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  .sub { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
-  .sub code { font-size: 12px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  input[type=url] { flex: 1 1 280px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
-    background: var(--bg); color: var(--text); font: inherit; }
-  button, .file-btn { padding: 8px 14px; border: 0; border-radius: 6px; background: var(--accent); color: #fff;
-    font: inherit; cursor: pointer; }
-  button:disabled { opacity: .5; cursor: default; }
-  .file-btn input { display: none; }
-  select { padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
-  #drop { border: 2px dashed var(--line); border-radius: 10px; min-height: 220px; display: grid; place-items: center;
-    color: var(--muted); text-align: center; overflow: hidden; }
-  #drop.over { border-color: var(--accent); }
-  #drop img { max-width: 100%; max-height: 420px; display: block; }
-  #status { font-size: 13px; color: var(--muted); }
-  #status.ok { color: var(--ok); } #status.err { color: var(--err); }
-  progress { width: 100%; height: 6px; }
-  #files { font-size: 12px; color: var(--muted); margin-top: 8px; }
-  #caption { font-size: 20px; font-weight: 600; min-height: 1.5em; }
-  #meta { font-size: 12px; color: var(--muted); }
-  label { font-size: 13px; color: var(--muted); }
-</style>
+<title>Caption Test</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=Schibsted+Grotesk:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
-<main>
-  <h1>Image caption test</h1>
-  <p class="sub">Model: <code>Xenova/vit-gpt2-image-captioning</code> (ViT encoder + GPT-2 decoder, ONNX) via Transformers.js. Runs fully in the browser.</p>
 
-  <div class="card">
-    <div class="row">
-      <label for="device">Device</label>
+<header class="bar">
+  <div class="brand">
+    <h1>Caption test</h1>
+    <p>Florence-2 base, running in this browser. Photos never leave your computer.</p>
+  </div>
+
+  <form class="engine" id="engine">
+    <label>Device
       <select id="device">
-        <option value="wasm">wasm (CPU)</option>
-        <option value="webgpu">webgpu</option>
+        <option value="wasm">CPU (wasm)</option>
+        <option value="webgpu">GPU (WebGPU)</option>
       </select>
-      <label for="dtype">Precision</label>
+    </label>
+    <label>Precision
       <select id="dtype">
-        <option value="q8">q8 (small, default)</option>
-        <option value="fp32">fp32 (full)</option>
+        <option value="mixed">Mixed, smaller</option>
+        <option value="fp32">Full (fp32)</option>
       </select>
-      <button id="load">Load model</button>
-    </div>
-    <div style="margin-top:12px">
-      <div id="status">Model not loaded.</div>
-      <progress id="bar" value="0" max="100" hidden></progress>
-      <div id="files"></div>
-    </div>
-  </div>
+    </label>
+    <button id="load" type="submit">Download model</button>
+  </form>
 
-  <div class="card">
-    <div id="drop">Drop an image here, or pick one below.</div>
-    <div class="row" style="margin-top:12px">
-      <label class="file-btn">Choose file<input type="file" id="file" accept="image/*"></label>
-      <input type="url" id="url" placeholder="…or paste an image URL">
-      <button id="useUrl">Use URL</button>
-    </div>
+  <div class="status">
+    <p id="status">Checking this browser for a saved model…</p>
+    <div class="rail" id="rail" hidden><span id="railFill"></span></div>
+    <ul class="files" id="files"></ul>
+    <p class="storage"><span id="storage"></span> <button class="forget" id="forget" type="button" hidden>Remove saved model</button></p>
   </div>
+</header>
 
-  <div class="card">
-    <div class="row" style="justify-content:space-between">
-      <div id="caption">—</div>
-      <button id="run" disabled>Caption</button>
+<main class="room">
+  <section class="wall" aria-label="Photo">
+    <figure class="frame" id="drop" tabindex="0" role="button" aria-label="Choose a photo, or drop one here">
+      <div class="mat" id="mat">
+        <p class="empty">Drop a photo here,<br>or click to choose one.</p>
+      </div>
+    </figure>
+
+    <div class="source">
+      <label class="pick">Choose photo<input type="file" id="file" accept="image/*"></label>
+      <form class="url" id="urlForm">
+        <input type="url" id="url" placeholder="Or paste an image URL" aria-label="Image URL">
+        <button type="submit">Use URL</button>
+      </form>
     </div>
-    <div id="meta"></div>
-  </div>
+  </section>
+
+  <aside class="label" aria-label="Caption">
+    <p class="caption" id="caption" aria-live="polite">Load the model and add a photo. Its caption appears here.</p>
+
+    <fieldset class="detail">
+      <legend>Detail</legend>
+      <label><input type="radio" name="task" value="&lt;CAPTION&gt;"><span>Short</span></label>
+      <label><input type="radio" name="task" value="&lt;DETAILED_CAPTION&gt;"><span>Detailed</span></label>
+      <label><input type="radio" name="task" value="&lt;MORE_DETAILED_CAPTION&gt;" checked><span>Most detailed</span></label>
+    </fieldset>
+
+    <dl class="facts">
+      <div><dt>Time</dt><dd id="time">–</dd></div>
+      <div><dt>Ran on</dt><dd id="ran">–</dd></div>
+      <div><dt>Photo size</dt><dd id="size">–</dd></div>
+    </dl>
+
+    <button class="again" id="run" type="button" disabled>Caption again</button>
+  </aside>
 </main>
 
-<script type="module">
-import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1';
-
-env.allowLocalModels = false; // fetch from the Hugging Face Hub, cached by the browser afterwards
-
-const MODEL = 'Xenova/vit-gpt2-image-captioning';
-const $ = (id) => document.getElementById(id);
-let captioner = null;
-let imageSrc = null;
-const progress = {};
-
-function setStatus(text, cls = '') { $('status').textContent = text; $('status').className = cls; }
-
-function onProgress(p) {
-  if (p.status === 'progress' && p.file) {
-    progress[p.file] = p.progress;
-    const vals = Object.values(progress);
-    $('bar').hidden = false;
-    $('bar').value = vals.reduce((a, b) => a + b, 0) / vals.length;
-    $('files').textContent = Object.entries(progress)
-      .map(([f, v]) => `${f.split('/').pop()} ${v.toFixed(0)}%`).join(' · ');
-  }
-}
-
-$('load').onclick = async () => {
-  $('load').disabled = true;
-  const device = $('device').value, dtype = $('dtype').value;
-  setStatus(`Downloading model (${device}, ${dtype})…`);
-  for (const k in progress) delete progress[k];
-  const t0 = performance.now();
-  try {
-    captioner = await pipeline('image-to-text', MODEL, { device, dtype, progress_callback: onProgress });
-    $('bar').hidden = true;
-    setStatus(`Model ready in ${((performance.now() - t0) / 1000).toFixed(1)}s.`, 'ok');
-    $('run').disabled = !imageSrc;
-    if (imageSrc) run();
-  } catch (e) {
-    console.error(e);
-    setStatus('Load failed: ' + e.message, 'err');
-    $('load').disabled = false;
-  }
-};
-
-function setImage(src) {
-  imageSrc = src;
-  $('drop').innerHTML = '';
-  const img = new Image();
-  img.src = src;
-  $('drop').appendChild(img);
-  $('caption').textContent = '—';
-  $('meta').textContent = '';
-  $('run').disabled = !captioner;
-  if (captioner) run();
-}
-
-function readFile(f) { if (f && f.type.startsWith('image/')) setImage(URL.createObjectURL(f)); }
-
-$('file').onchange = (e) => readFile(e.target.files[0]);
-$('useUrl').onclick = () => { const u = $('url').value.trim(); if (u) setImage(u); };
-const drop = $('drop');
-drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
-drop.ondragleave = () => drop.classList.remove('over');
-drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); readFile(e.dataTransfer.files[0]); };
-
-async function run() {
-  if (!captioner || !imageSrc) return;
-  $('run').disabled = true;
-  $('caption').textContent = 'Thinking…';
-  const t0 = performance.now();
-  try {
-    const out = await captioner(imageSrc, { max_new_tokens: 30 });
-    $('caption').textContent = out[0].generated_text.trim();
-    $('meta').textContent = `${((performance.now() - t0) / 1000).toFixed(2)}s`;
-  } catch (e) {
-    console.error(e);
-    $('caption').textContent = 'Error: ' + e.message;
-  }
-  $('run').disabled = false;
-}
-$('run').onclick = run;
-</script>
+<script src="app.js?v=6"></script>
 </body>
 </html>
