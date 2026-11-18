@@ -42,12 +42,69 @@ function onProgress(p) {
 // Transformers.js keeps downloaded files in the browser's Cache Storage under this name
 // (DevTools > Application > Cache storage), keyed by their Hugging Face URL.
 // We look there first and only download what's missing.
+//
+// Cache Storage (and WebGPU) only exist on secure origins: https://, localhost, 127.0.0.1.
+// On a plain-http address such as http://192.168.1.222 the files go into IndexedDB instead
+// (DevTools > Application > IndexedDB > caption-model), through the same match/put interface.
 const CACHE = 'transformers-cache';
+const IDB_NAME = 'caption-model';
 const OLD_BUCKET = 'florence-2-model'; // briefly used by an earlier version; moved back on open
 const PARTS = ['embed_tokens', 'vision_encoder', 'encoder_model', 'decoder_model_merged'];
 const SUFFIX = { fp32: '', fp16: '_fp16', q8: '_quantized', q4: '_q4' };
 const PREFS = 'caption-test:engine:v2'; // v2: WebGPU became the default, so older saved choices are ignored
-const canSave = 'caches' in window && window.isSecureContext && location.protocol !== 'file:';
+const isFile = location.protocol === 'file:';
+const useCacheApi = !isFile && window.isSecureContext && 'caches' in window;
+const canSave = !isFile && (useCacheApi || 'indexedDB' in window);
+
+// A Cache-like store on IndexedDB: match / put / keys / clear, keyed by the file's URL.
+function idbStore() {
+  let dbp;
+  const db = () => (dbp ??= new Promise((resolve, reject) => {
+    const r = indexedDB.open(IDB_NAME, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('files');
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  }));
+  const tx = async (mode, fn) => {
+    const d = await db();
+    return new Promise((resolve, reject) => {
+      const t = d.transaction('files', mode);
+      const req = fn(t.objectStore('files'));
+      t.oncomplete = () => resolve(req?.result);
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error);
+    });
+  };
+  const key = (r) => (typeof r === 'string' ? r : r.url);
+  return {
+    async match(r) {
+      const rec = await tx('readonly', (s) => s.get(key(r)));
+      if (!rec) return undefined;
+      return new Response(rec.blob, { headers: {
+        'content-type': rec.type || 'application/octet-stream',
+        'content-length': String(rec.blob.size),
+      } });
+    },
+    async put(r, res) {
+      const blob = await res.blob();
+      await tx('readwrite', (s) => s.put({ blob, type: res.headers.get('content-type') }, key(r)));
+    },
+    async keys() {
+      return (await tx('readonly', (s) => s.getAllKeys())).map((url) => ({ url }));
+    },
+    async size() {
+      const recs = await tx('readonly', (s) => s.getAll()); // Blob handles only, not their bytes
+      return recs.reduce((n, rec) => n + rec.blob.size, 0);
+    },
+    async clear() { await tx('readwrite', (s) => s.clear()); },
+  };
+}
+
+let store = null;
+async function getStore() {
+  if (!canSave) return null;
+  return (store ??= useCacheApi ? await caches.open(CACHE) : idbStore());
+}
 
 // WebGPU support, checked once on page open.
 let gpuOk = false, hasF16 = false;
@@ -76,6 +133,7 @@ function neededFiles(dtype) {
 // If an earlier version of this page put the files in a storage bucket, move them back into
 // the default Cache Storage once, then delete the bucket.
 async function moveBackFromBucket() {
+  if (!useCacheApi) return;
   try {
     if (!navigator.storageBuckets || !(await navigator.storageBuckets.keys()).includes(OLD_BUCKET)) return;
     setStatus('Moving the saved model back into Cache storage…');
@@ -93,8 +151,7 @@ async function moveBackFromBucket() {
 async function isSaved(device, precision) {
   if (!canSave) return false;
   try {
-    const cache = await caches.open(CACHE);
-    const urls = (await cache.keys()).map((r) => r.url);
+    const urls = (await (await getStore()).keys()).map((r) => r.url);
     return neededFiles(dtypeFor(device, precision)).every((f) => urls.some((u) => u.endsWith(f)));
   } catch { return false; }
 }
@@ -106,9 +163,16 @@ async function keepForever() {
 }
 
 async function showStorage() {
-  if (!canSave || !navigator.storage?.estimate) { $('storage').textContent = ''; return; }
-  const { usage } = await navigator.storage.estimate();
-  const kept = await navigator.storage.persisted();
+  if (!canSave) { $('storage').textContent = ''; return; }
+  let usage = 0, kept = false;
+  try {
+    if (useCacheApi && navigator.storage?.estimate) {
+      usage = (await navigator.storage.estimate()).usage;
+      kept = await navigator.storage.persisted();
+    } else {
+      usage = await (await getStore()).size(); // plain http: no StorageManager, so add up IndexedDB
+    }
+  } catch { $('storage').textContent = ''; return; }
   const gb = usage / 1e9;
   $('storage').textContent = usage < 1e6 ? 'Nothing saved in this browser yet.'
     : `Saved in this browser: ${gb >= 1 ? gb.toFixed(1) + ' GB' : Math.round(usage / 1e6) + ' MB'}. `
@@ -137,7 +201,15 @@ async function loadModel(fromSaved) {
     const lib = await import(LIB);
     ({ Florence2ForConditionalGeneration, AutoProcessor, RawImage } = lib);
     lib.env.allowLocalModels = false;
-    lib.env.useBrowserCache = canSave; // read from / write to Cache Storage ("transformers-cache")
+    if (useCacheApi) {
+      lib.env.useBrowserCache = true; // read from / write to Cache Storage ("transformers-cache")
+    } else {
+      lib.env.useBrowserCache = false;
+      if (canSave) { // plain http: same thing, through the IndexedDB store
+        lib.env.useCustomCache = true;
+        lib.env.customCache = await getStore();
+      }
+    }
     [model, processor] = await Promise.all([
       Florence2ForConditionalGeneration.from_pretrained(MODEL, {
         device, dtype: dtypeFor(device, precision), progress_callback: fromSaved ? undefined : onProgress,
@@ -182,7 +254,10 @@ $('device').onchange = $('dtype').onchange = refreshButton;
 
 $('forget').onclick = async () => {
   if (!confirm('Remove the saved model from this browser? You will need to download it again.')) return;
-  try { await caches.delete(CACHE); } catch {}
+  try {
+    if (useCacheApi) { await caches.delete(CACHE); store = null; }
+    else await (await getStore()).clear();
+  } catch (err) { console.error(err); }
   model = null; processor = null;
   $('device').disabled = $('dtype').disabled = false;
   $('load').disabled = false;
@@ -201,7 +276,8 @@ $('forget').onclick = async () => {
   if (!gpuOk) {
     const opt = $('device').querySelector('option[value="webgpu"]');
     opt.disabled = true;
-    opt.textContent = 'GPU (not available here)';
+    // WebGPU only exists on https://, localhost and 127.0.0.1.
+    opt.textContent = window.isSecureContext ? 'GPU (not available here)' : 'GPU (needs https)';
     $('device').value = 'wasm';
   }
   if (!canSave) {

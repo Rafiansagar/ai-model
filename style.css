@@ -1,49 +1,24 @@
 /* Gallery wall: the photo hangs in a frame, the caption is its wall label. */
 
+/* One scheme only: the deep teal wall, whatever the system's light/dark setting. */
 :root {
-  --wall: #dce0d9;
-  --wall-ink: #1f2624;
-  --wall-muted: #56605b;
-  --wall-line: #b9c0b7;
-  --frame: #2b2622;
-  --mat: #fbfbf8;
-  --paper: #f7f7f3;
+  --wall: #1e2b29;
+  --wall-ink: #e4e8e2;
+  --wall-muted: #9fada8;
+  --wall-line: #3a4c49;
+  --frame: #0f0d0b;
+  --mat: #ecebe5;
+  --paper: #eeede7;
   --ink: #1a1c1b;
-  --ink-muted: #5d625e;
-  --rule: #d9dbd4;
-  --brass: #94702f;
-  --on-brass: #ffffff;
-  --err: #a3321f;
-  --ok: #2e6a48;
+  --ink-muted: #585d59;
+  --rule: #d3d3cb;
+  --brass: #d3a961;
+  --on-brass: #1e2b29;
+  --err: #ff9d8a;
+  --ok: #8fd4ac;
 
   --serif: "Newsreader", Georgia, serif;
   --sans: "Schibsted Grotesk", system-ui, sans-serif;
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --wall: #1e2b29;
-    --wall-ink: #e4e8e2;
-    --wall-muted: #9fada8;
-    --wall-line: #3a4c49;
-    --frame: #0f0d0b;
-    --mat: #ecebe5;
-    --paper: #eeede7;
-    --ink: #1a1c1b;
-    --ink-muted: #585d59;
-    --rule: #d3d3cb;
-    --brass: #d3a961;
-    --on-brass: #1e2b29;
-    --err: #ff9d8a;
-    --ok: #8fd4ac;
-    color-scheme: dark;
-  }
-}
-:root[data-theme="dark"] {
-  --wall: #1e2b29; --wall-ink: #e4e8e2; --wall-muted: #9fada8; --wall-line: #3a4c49;
-  --frame: #0f0d0b; --mat: #ecebe5; --paper: #eeede7; --ink: #1a1c1b; --ink-muted: #585d59;
-  --rule: #d3d3cb; --brass: #d3a961; --on-brass: #1e2b29; --err: #ff9d8a; --ok: #8fd4ac;
   color-scheme: dark;
 }
 
