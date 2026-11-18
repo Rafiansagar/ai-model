@@ -46,14 +46,26 @@ const CACHE = 'transformers-cache';
 const OLD_BUCKET = 'florence-2-model'; // briefly used by an earlier version; moved back on open
 const PARTS = ['embed_tokens', 'vision_encoder', 'encoder_model', 'decoder_model_merged'];
 const SUFFIX = { fp32: '', fp16: '_fp16', q8: '_quantized', q4: '_q4' };
-const PREFS = 'caption-test:engine';
+const PREFS = 'caption-test:engine:v2'; // v2: WebGPU became the default, so older saved choices are ignored
 const canSave = 'caches' in window && window.isSecureContext && location.protocol !== 'file:';
+
+// WebGPU support, checked once on page open.
+let gpuOk = false, hasF16 = false;
+async function probeGPU() {
+  try {
+    const adapter = await navigator.gpu?.requestAdapter();
+    if (!adapter) return;
+    gpuOk = true;
+    hasF16 = adapter.features.has('shader-f16'); // half-precision shaders; most desktop GPUs have it
+  } catch {}
+}
 
 // Florence-2 is four ONNX files; keep the image side at full/half precision, quantize the text side.
 function dtypeFor(device, precision) {
   if (precision === 'fp32') return 'fp32';
+  const half = hasF16 ? 'fp16' : 'fp32';
   return device === 'webgpu'
-    ? { embed_tokens: 'fp16', vision_encoder: 'fp16', encoder_model: 'q4', decoder_model_merged: 'q4' }
+    ? { embed_tokens: half, vision_encoder: half, encoder_model: 'q4', decoder_model_merged: 'q4' }
     : { embed_tokens: 'fp32', vision_encoder: 'fp32', encoder_model: 'q8', decoder_model_merged: 'q8' };
 }
 
@@ -150,7 +162,14 @@ async function loadModel(fromSaved) {
     else setCaption('Add a photo. Its caption appears here.', 'waiting');
   } catch (err) {
     console.error(err);
-    setStatus(`The model didn't load: ${err.message}. Try CPU (wasm) if GPU was selected.`, 'err');
+    model = processor = null;
+    if (device === 'webgpu') {
+      // GPU path failed (driver, memory, blocked WebGPU): fall back to the CPU once.
+      $('device').value = 'wasm';
+      setStatus(`The GPU couldn't run the model (${err.message}). Switching to the CPU…`);
+      return loadModel(await isSaved('wasm', precision));
+    }
+    setStatus(`The model didn't load: ${err.message}.`, 'err');
     $('load').disabled = false;
   }
 }
@@ -178,6 +197,13 @@ $('forget').onclick = async () => {
     const p = JSON.parse(localStorage.getItem(PREFS) || 'null');
     if (p) { $('device').value = p.device; $('dtype').value = p.dtype; }
   } catch {}
+  await probeGPU();
+  if (!gpuOk) {
+    const opt = $('device').querySelector('option[value="webgpu"]');
+    opt.disabled = true;
+    opt.textContent = 'GPU (not available here)';
+    $('device').value = 'wasm';
+  }
   if (!canSave) {
     setStatus("Opened as a file, so this browser can't save the model. Open the page through a local server to download it once and keep it.");
     return;
@@ -187,7 +213,9 @@ $('forget').onclick = async () => {
   const saved = await refreshButton();
   showStorage();
   if (saved) loadModel(true);
-  else setStatus("The model isn't saved in this browser yet. Download it once and it stays here.");
+  else if ($('device').value === 'webgpu' && await isSaved('wasm', $('dtype').value)) {
+    setStatus("The GPU version of the model isn't saved yet. Download it once for faster captions, or switch Device to CPU to use the saved CPU version.");
+  } else setStatus("The model isn't saved in this browser yet. Download it once and it stays here.");
 })();
 
 function setImage(src) {
