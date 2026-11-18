@@ -632,8 +632,8 @@ function parseShapes(raw, kind, w, h) {
       const n = [...part.matchAll(/<loc_(\d+)>/g)].map((x) => (Number(x[1]) + 0.5) / 1000);
       const pts = [];
       for (let i = 0; i + 1 < n.length; i += 2) pts.push([n[i] * w, n[i + 1] * h]);
-      // "auto" (find anything you name): unmarked runs of 2 or 4 points are one or two boxes; longer runs are outlines.
-      const asBoxes = kind === 'box' || (kind === 'auto' && !polyMarked && (pts.length === 2 || pts.length === 4));
+      // "auto" (find anything you name): without <poly>, every 2 points (4 numbers) is one box; several matches come back in a row.
+      const asBoxes = kind === 'box' || (kind === 'auto' && !polyMarked && pts.length % 2 === 0);
       if (asBoxes) {
         for (let i = 0; i + 1 < pts.length; i += 2) out.push({ label, box: [...pts[i], ...pts[i + 1]] });
       } else if (kind === 'quad') {

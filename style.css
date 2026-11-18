@@ -314,3 +314,8 @@ button:disabled { opacity: .45; cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* link back to the recipe book (playground page) */
+.back { max-width: 1320px; margin: 0 auto; padding: 16px 24px 0; font-size: 13.5px; }
+.back a { color: var(--wall-muted); text-decoration-color: var(--brass); text-underline-offset: 3px; }
+.back a:hover { color: var(--wall-ink); }

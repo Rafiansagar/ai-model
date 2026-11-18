@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Playground</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=Schibsted+Grotesk:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css?v=9">
+</head>
+<body>
+
+<p class="back"><a href="./">Local AI recipes</a></p>
+
+<header class="bar">
+  <div class="brand">
+    <h1>Playground</h1>
+    <p>Caption, read, find and outline what's in a photo. Runs in this browser; photos never leave your computer.</p>
+  </div>
+
+  <form class="engine" id="engine">
+    <label>Model
+      <select id="model">
+        <option value="base" selected>Base, faster</option>
+        <option value="large">Large, more accurate</option>
+      </select>
+    </label>
+    <label>Device
+      <select id="device">
+        <option value="webgpu" selected>GPU (WebGPU)</option>
+        <option value="wasm">CPU (wasm)</option>
+      </select>
+    </label>
+    <label>Precision
+      <select id="dtype">
+        <option value="mixed">Mixed, smaller</option>
+        <option value="fp32">Full (fp32)</option>
+      </select>
+    </label>
+    <button id="load" type="submit">Download model</button>
+  </form>
+
+  <div class="status">
+    <p id="status">Checking this browser for a saved model…</p>
+    <div class="rail" id="rail" hidden><span id="railFill"></span></div>
+    <ul class="files" id="files"></ul>
+    <p class="storage"><span id="storage"></span> <button class="forget" id="forget" type="button" hidden>Remove saved model</button></p>
+    <p class="guard" id="guard"></p>
+  </div>
+</header>
+
+<main class="room">
+  <nav class="guide" id="guide" aria-label="What to do with the photo"></nav>
+
+  <section class="wall" aria-label="Photo">
+    <figure class="frame" id="drop" tabindex="0" aria-label="Photo. Choose one, or drop one here">
+      <div class="mat" id="mat">
+        <p class="empty" id="empty">Drop a photo here,<br>or click to choose one.</p>
+        <div class="stage" id="stage" hidden>
+          <img id="photo" alt="Photo being studied">
+          <svg class="marks" id="marks" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <div class="tags" id="tags" aria-hidden="true"></div>
+        </div>
+      </div>
+    </figure>
+
+    <div class="source">
+      <label class="pick">Choose photo<input type="file" id="file" accept="image/*"></label>
+      <form class="url" id="urlForm">
+        <input type="url" id="url" placeholder="Or paste an image URL" aria-label="Image URL">
+        <button type="submit">Use URL</button>
+      </form>
+    </div>
+  </section>
+
+  <aside class="label" aria-label="Result">
+    <h2 class="tool-name" id="toolName">Short caption</h2>
+
+    <form class="ask" id="ask" hidden>
+      <label for="askInput" id="askLabel">What to find</label>
+      <input type="text" id="askInput" autocomplete="off">
+    </form>
+    <p class="hint" id="hint" hidden>Drag on the photo to mark an area.</p>
+
+    <p class="caption" id="caption" aria-live="polite">Load the model and add a photo to start.</p>
+    <ul class="finds" id="finds" hidden></ul>
+
+    <dl class="facts">
+      <div><dt>Time</dt><dd id="time">–</dd></div>
+      <div><dt>Ran on</dt><dd id="ran">–</dd></div>
+      <div><dt>Photo size</dt><dd id="size">–</dd></div>
+    </dl>
+
+    <button class="again" id="run" type="button" disabled>Caption photo</button>
+  </aside>
+</main>
+
+<script src="storage.js?v=1"></script>
+<script src="app.js?v=15"></script>
+</body>
+</html>
