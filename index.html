@@ -18,6 +18,12 @@
   </div>
 
   <form class="engine" id="engine">
+    <label>Model
+      <select id="model">
+        <option value="base" selected>Base, faster</option>
+        <option value="large">Large, more accurate</option>
+      </select>
+    </label>
     <label>Device
       <select id="device">
         <option value="webgpu" selected>GPU (WebGPU)</option>
@@ -87,6 +93,6 @@
   </aside>
 </main>
 
-<script src="app.js?v=10"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>

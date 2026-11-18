@@ -4,10 +4,22 @@
 const LIB = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1';
 let Florence2ForConditionalGeneration, AutoProcessor, RawImage;
 
-const MODEL = 'onnx-community/Florence-2-base-ft';
+// Two sizes of the same model; both know the same 15 tasks. Large is ~3x the download and slower,
+// but more accurate. Download sizes (MB) per page setting, from the files on Hugging Face.
+const MODELS = {
+  base: { id: 'onnx-community/Florence-2-base-ft', name: 'Base', mb: { webgpu: 357, wasm: 667, fp32: 1086 } },
+  large: { id: 'onnx-community/Florence-2-large-ft', name: 'Large', mb: { webgpu: 1096, wasm: 2075, fp32: 3295 } },
+};
 const $ = (id) => document.getElementById(id);
+const which = () => MODELS[$('model').value] || MODELS.base;
+const engineKey = () => `${$('model').value}|${$('device').value}|${$('dtype').value}`;
+function sizeLabel(m = which(), device = $('device').value, precision = $('dtype').value) {
+  const mb = m.mb[precision === 'fp32' ? 'fp32' : device];
+  return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`;
+}
 
 let model = null, processor = null;
+let loadedKey = null, loading = false;
 let imageSrc = null;
 let loadedOn = '';
 let busy = false, rerun = false;
@@ -126,8 +138,8 @@ function dtypeFor(device, precision) {
     : { embed_tokens: 'fp32', vision_encoder: 'fp32', encoder_model: 'q8', decoder_model_merged: 'q8' };
 }
 
-function neededFiles(dtype) {
-  return PARTS.map((p) => `${MODEL}/resolve/main/onnx/${p}${SUFFIX[typeof dtype === 'string' ? dtype : dtype[p]]}.onnx`);
+function neededFiles(id, dtype) {
+  return PARTS.map((p) => `${id}/resolve/main/onnx/${p}${SUFFIX[typeof dtype === 'string' ? dtype : dtype[p]]}.onnx`);
 }
 
 // If an earlier version of this page put the files in a storage bucket, move them back into
@@ -148,11 +160,11 @@ async function moveBackFromBucket() {
   } catch (err) { console.error(err); }
 }
 
-async function isSaved(device, precision) {
+async function isSaved(device, precision, m = which()) {
   if (!canSave) return false;
   try {
     const urls = (await (await getStore()).keys()).map((r) => r.url);
-    return neededFiles(dtypeFor(device, precision)).every((f) => urls.some((u) => u.endsWith(f)));
+    return neededFiles(m.id, dtypeFor(device, precision)).every((f) => urls.some((u) => u.endsWith(f)));
   } catch { return false; }
 }
 
@@ -180,21 +192,41 @@ async function showStorage() {
   $('forget').hidden = usage < 1e6;
 }
 
+// The button always matches the menus: "Model loaded" when they match what's running,
+// otherwise "Load saved model" or "Download model (size)" for the new choice.
 async function refreshButton() {
-  if (model) return;
+  if (loading) return false;
+  if (model && engineKey() === loadedKey) {
+    $('load').textContent = 'Model loaded';
+    $('load').disabled = true;
+    return true;
+  }
   const saved = await isSaved($('device').value, $('dtype').value);
-  $('load').textContent = saved ? 'Load saved model' : 'Download model';
+  $('load').textContent = saved ? 'Load saved model' : `Download model (${sizeLabel()})`;
+  $('load').disabled = false;
   return saved;
 }
 
 function remember() {
-  try { localStorage.setItem(PREFS, JSON.stringify({ device: $('device').value, dtype: $('dtype').value })); } catch {}
+  try {
+    localStorage.setItem(PREFS, JSON.stringify({ model: $('model').value, device: $('device').value, dtype: $('dtype').value }));
+  } catch {}
 }
 
 async function loadModel(fromSaved) {
+  loading = true;
   $('load').disabled = true;
-  const device = $('device').value, precision = $('dtype').value;
-  setStatus(fromSaved ? 'Loading the saved model from this browser…' : 'Downloading the model. This happens once…');
+  const m = which(), device = $('device').value, precision = $('dtype').value;
+  setStatus(fromSaved ? `Loading Florence-2 ${m.name.toLowerCase()} from this browser…`
+    : `Downloading Florence-2 ${m.name.toLowerCase()} (${sizeLabel(m, device, precision)}). This happens once…`);
+  // Free the one that's running first (GPU memory), after any caption in progress finishes.
+  while (busy) await new Promise((r) => setTimeout(r, 100));
+  if (model) {
+    const old = model;
+    model = processor = null;
+    loadedKey = null;
+    try { await old.dispose?.(); } catch {}
+  }
   for (const k in progress) delete progress[k];
   const t0 = performance.now();
   try {
@@ -211,23 +243,24 @@ async function loadModel(fromSaved) {
       }
     }
     [model, processor] = await Promise.all([
-      Florence2ForConditionalGeneration.from_pretrained(MODEL, {
+      Florence2ForConditionalGeneration.from_pretrained(m.id, {
         device, dtype: dtypeFor(device, precision), progress_callback: fromSaved ? undefined : onProgress,
       }),
-      AutoProcessor.from_pretrained(MODEL),
+      AutoProcessor.from_pretrained(m.id),
     ]);
     remember();
-    loadedOn = `${$('device').selectedOptions[0].text}, ${precision}`;
+    loadedKey = `${$('model').value}|${device}|${precision}`;
+    loadedOn = `${m.name}, ${$('device').selectedOptions[0].text}, ${precision}`;
+    loading = false;
     $('rail').hidden = true;
     $('files').innerHTML = '';
-    $('load').textContent = 'Model loaded';
-    $('device').disabled = $('dtype').disabled = true;
+    await refreshButton();
     const secs = ((performance.now() - t0) / 1000).toFixed(1);
     if (!canSave) {
       setStatus(`Model ready in ${secs} s. Opened as a file, so it couldn't be saved; open the page through a local server to keep it.`, 'ok');
     } else {
       await keepForever(); // result shows up in the storage line below
-      setStatus(`Model ready in ${secs} s, ${fromSaved ? 'loaded from this browser' : 'downloaded and saved in this browser'}.`, 'ok');
+      setStatus(`Florence-2 ${m.name.toLowerCase()} ready in ${secs} s, ${fromSaved ? 'loaded from this browser' : 'downloaded and saved in this browser'}.`, 'ok');
     }
     showStorage();
     if (imageSrc) run();
@@ -235,14 +268,19 @@ async function loadModel(fromSaved) {
   } catch (err) {
     console.error(err);
     model = processor = null;
-    if (device === 'webgpu') {
-      // GPU path failed (driver, memory, blocked WebGPU): fall back to the CPU once.
+    loadedKey = null;
+    loading = false;
+    // GPU path failed (driver, out of GPU memory, blocked WebGPU). Fall back to the CPU only when
+    // that version is already saved; never start a surprise multi-GB download.
+    if (device === 'webgpu' && await isSaved('wasm', precision, m)) {
       $('device').value = 'wasm';
-      setStatus(`The GPU couldn't run the model (${err.message}). Switching to the CPU…`);
-      return loadModel(await isSaved('wasm', precision));
+      setStatus(`The GPU couldn't run Florence-2 ${m.name.toLowerCase()} (${err.message}). Switching to the saved CPU version…`);
+      return loadModel(true);
     }
-    setStatus(`The model didn't load: ${err.message}.`, 'err');
-    $('load').disabled = false;
+    setStatus(device === 'webgpu'
+      ? `The GPU couldn't run Florence-2 ${m.name.toLowerCase()}: ${err.message}. Try the base model, or switch Device to CPU (${sizeLabel(m, 'wasm', precision)} download).`
+      : `The model didn't load: ${err.message}.`, 'err');
+    await refreshButton();
   }
 }
 
@@ -250,7 +288,8 @@ $('engine').onsubmit = async (e) => {
   e.preventDefault();
   loadModel(await isSaved($('device').value, $('dtype').value));
 };
-$('device').onchange = $('dtype').onchange = refreshButton;
+// Changing a menu doesn't drop the running model; the button offers to load the new choice.
+$('model').onchange = $('device').onchange = $('dtype').onchange = refreshButton;
 
 $('forget').onclick = async () => {
   if (!confirm('Remove the saved model from this browser? You will need to download it again.')) return;
@@ -258,9 +297,7 @@ $('forget').onclick = async () => {
     if (useCacheApi) { await caches.delete(CACHE); store = null; }
     else await (await getStore()).clear();
   } catch (err) { console.error(err); }
-  model = null; processor = null;
-  $('device').disabled = $('dtype').disabled = false;
-  $('load').disabled = false;
+  model = null; processor = null; loadedKey = null;
   await refreshButton();
   setStatus('Saved model removed. Download it again to use the tools.');
   showStorage();
@@ -270,7 +307,7 @@ $('forget').onclick = async () => {
 (async () => {
   try {
     const p = JSON.parse(localStorage.getItem(PREFS) || 'null');
-    if (p) { $('device').value = p.device; $('dtype').value = p.dtype; }
+    if (p) { $('model').value = p.model || 'base'; $('device').value = p.device; $('dtype').value = p.dtype; }
   } catch {}
   await probeGPU();
   if (!gpuOk) {
@@ -290,8 +327,8 @@ $('forget').onclick = async () => {
   showStorage();
   if (saved) loadModel(true);
   else if ($('device').value === 'webgpu' && await isSaved('wasm', $('dtype').value)) {
-    setStatus("The GPU version of the model isn't saved yet. Download it once for faster captions, or switch Device to CPU to use the saved CPU version.");
-  } else setStatus("The model isn't saved in this browser yet. Download it once and it stays here.");
+    setStatus(`The GPU version isn't saved yet. Download it once (${sizeLabel()}) for faster results, or switch Device to CPU to use the saved CPU version.`);
+  } else setStatus(`Florence-2 ${which().name.toLowerCase()} isn't saved in this browser yet. Download it once (${sizeLabel()}) and it stays here.`);
 })();
 
 
