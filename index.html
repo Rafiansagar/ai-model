@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Caption Test</title>
+<title>Florence-2 Bench</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=Schibsted+Grotesk:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
 
 <header class="bar">
   <div class="brand">
-    <h1>Caption test</h1>
-    <p>Florence-2 base, running in this browser. Photos never leave your computer.</p>
+    <h1>Florence-2 bench</h1>
+    <p>Caption, read, find and outline what's in a photo. Runs in this browser; photos never leave your computer.</p>
   </div>
 
   <form class="engine" id="engine">
@@ -42,10 +42,17 @@
 </header>
 
 <main class="room">
+  <nav class="guide" id="guide" aria-label="What to do with the photo"></nav>
+
   <section class="wall" aria-label="Photo">
-    <figure class="frame" id="drop" tabindex="0" role="button" aria-label="Choose a photo, or drop one here">
+    <figure class="frame" id="drop" tabindex="0" aria-label="Photo. Choose one, or drop one here">
       <div class="mat" id="mat">
-        <p class="empty">Drop a photo here,<br>or click to choose one.</p>
+        <p class="empty" id="empty">Drop a photo here,<br>or click to choose one.</p>
+        <div class="stage" id="stage" hidden>
+          <img id="photo" alt="Photo being studied">
+          <svg class="marks" id="marks" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <div class="tags" id="tags" aria-hidden="true"></div>
+        </div>
       </div>
     </figure>
 
@@ -58,15 +65,17 @@
     </div>
   </section>
 
-  <aside class="label" aria-label="Caption">
-    <p class="caption" id="caption" aria-live="polite">Load the model and add a photo. Its caption appears here.</p>
+  <aside class="label" aria-label="Result">
+    <h2 class="tool-name" id="toolName">Short caption</h2>
 
-    <fieldset class="detail">
-      <legend>Detail</legend>
-      <label><input type="radio" name="task" value="&lt;CAPTION&gt;" checked><span>Short</span></label>
-      <label><input type="radio" name="task" value="&lt;DETAILED_CAPTION&gt;"><span>Detailed</span></label>
-      <label><input type="radio" name="task" value="&lt;MORE_DETAILED_CAPTION&gt;"><span>Most detailed</span></label>
-    </fieldset>
+    <form class="ask" id="ask" hidden>
+      <label for="askInput" id="askLabel">What to find</label>
+      <input type="text" id="askInput" autocomplete="off">
+    </form>
+    <p class="hint" id="hint" hidden>Drag on the photo to mark an area.</p>
+
+    <p class="caption" id="caption" aria-live="polite">Load the model and add a photo to start.</p>
+    <ul class="finds" id="finds" hidden></ul>
 
     <dl class="facts">
       <div><dt>Time</dt><dd id="time">–</dd></div>
@@ -74,10 +83,10 @@
       <div><dt>Photo size</dt><dd id="size">–</dd></div>
     </dl>
 
-    <button class="again" id="run" type="button" disabled>Caption again</button>
+    <button class="again" id="run" type="button" disabled>Caption photo</button>
   </aside>
 </main>
 
-<script src="app.js?v=8"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>

@@ -39,7 +39,7 @@ button, input, select { font: inherit; color: inherit; }
 /* ---------- control bar ---------- */
 
 .bar {
-  max-width: 1180px;
+  max-width: 1320px;
   margin: 0 auto;
   padding: 28px 24px 0;
   display: grid;
@@ -106,17 +106,37 @@ button:disabled { opacity: .45; cursor: default; }
   font-size: 12px; color: var(--wall-muted);
 }
 
-/* ---------- room: frame + label ---------- */
+/* ---------- room: guide rail + frame + label ---------- */
 
 .room {
-  max-width: 1180px;
+  max-width: 1320px;
   margin: 0 auto;
   padding: 40px 24px 72px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  gap: 48px;
+  grid-template-columns: 196px minmax(0, 1fr) 330px;
+  gap: 40px;
   align-items: start;
 }
+
+/* the gallery guide: tools grouped by what you give the model */
+.guide { position: sticky; top: 24px; display: grid; gap: 22px; }
+.guide h2 {
+  margin: 0 0 6px;
+  font: 400 15px/1.3 var(--serif);
+  color: var(--wall-ink);
+}
+.tool { display: block; position: relative; cursor: pointer; }
+.tool input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.tool span {
+  display: block;
+  padding: 4px 0 4px 12px;
+  border-left: 2px solid var(--wall-line);
+  font-size: 13.5px;
+  color: var(--wall-muted);
+}
+.tool:hover span { color: var(--wall-ink); }
+.tool input:checked + span { border-left-color: var(--brass); color: var(--wall-ink); font-weight: 500; }
+.tool input:focus-visible + span { outline: 2px solid var(--brass); outline-offset: 2px; }
 
 .wall { display: grid; gap: 20px; justify-items: start; }
 
@@ -139,12 +159,48 @@ button:disabled { opacity: .45; cursor: default; }
   transition: outline-color .15s;
 }
 .frame.over .mat { outline-color: var(--brass); }
-.mat img {
+.frame.has-photo { cursor: default; }
+.frame.drawing .stage { cursor: crosshair; touch-action: none; }
+
+/* photo + the marks drawn on it */
+.stage { position: relative; line-height: 0; user-select: none; }
+.stage[hidden] { display: none; }
+.stage img {
   display: block;
   max-width: 100%;
-  max-height: 62vh;
+  max-height: 64vh;
   box-shadow: 0 0 0 1px rgba(0,0,0,.08);
+  -webkit-user-drag: none;
 }
+.marks, .tags { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.marks * { vector-effect: non-scaling-stroke; }
+/* each mark is a dark under-stroke plus a brass line, so it reads on light and dark photos */
+.mark .under { fill: none; stroke: rgba(15, 13, 11, .75); stroke-width: 3.5; }
+.mark .top { fill: rgba(211, 169, 97, .10); stroke: var(--brass); stroke-width: 1.6; }
+.mark.poly .top { fill: rgba(211, 169, 97, .32); }
+.mark.area .top { fill: rgba(211, 169, 97, .08); stroke-dasharray: 6 4; }
+.marks.focus .mark:not(.area) { opacity: .2; }
+.marks.focus .mark.on { opacity: 1; }
+.mark.on .top { stroke-width: 2.6; fill: rgba(211, 169, 97, .28); }
+.mark { transition: opacity .15s; }
+
+.tag {
+  position: absolute;
+  transform: translateY(-100%);
+  max-width: 45%;
+  padding: 2px 6px 3px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 500 11.5px/1.25 var(--sans);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 3px rgba(15, 13, 11, .4);
+  transition: opacity .15s;
+}
+.tag.inside { transform: none; }
+.tags.focus .tag { opacity: .15; }
+.tags.focus .tag.on { opacity: 1; background: var(--brass); color: var(--on-brass); }
 .empty {
   margin: 0;
   color: #6f736f;
@@ -168,48 +224,58 @@ button:disabled { opacity: .45; cursor: default; }
   box-shadow: 0 10px 22px -16px rgba(20, 24, 22, .5);
 }
 
+.tool-name { margin: 0 0 14px; font: 500 12.5px/1.3 var(--sans); color: var(--ink-muted); }
+
+.ask { display: grid; gap: 4px; margin: 0 0 18px; }
+.ask[hidden] { display: none; }
+.ask label { font-size: 12px; color: var(--ink-muted); }
+.ask input {
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: #fff;
+  color: var(--ink);
+}
+.ask input:focus-visible { outline-offset: 1px; }
+.hint { margin: 0 0 18px; font-size: 13px; color: var(--ink-muted); }
+.hint[hidden] { display: none; }
+
 .caption {
-  margin: 0 0 26px;
-  font: 400 clamp(22px, 2.1vw, 27px)/1.38 var(--serif);
+  margin: 0 0 22px;
+  font: 400 clamp(22px, 2vw, 26px)/1.38 var(--serif);
   letter-spacing: -0.005em;
   text-wrap: pretty;
+  overflow-wrap: anywhere;
 }
+.caption.long { font-size: 18px; line-height: 1.5; white-space: pre-line; max-height: 46vh; overflow: auto; }
 .caption.waiting { color: var(--ink-muted); }
-.caption.error { color: #a3321f; font-size: 18px; }
+.caption.error { color: #a3321f; font-size: 17px; }
 .caption.fresh { animation: ink-in .5s ease-out; }
 @keyframes ink-in { from { opacity: 0; } to { opacity: 1; } }
 
-.detail {
-  margin: 0 0 20px;
+/* what was found; pointing at one lights its mark on the photo */
+.finds {
+  list-style: none;
+  margin: -8px 0 20px;
   padding: 0;
-  border: 0;
+  max-height: 32vh;
+  overflow: hidden auto;
+  font-size: 13.5px;
+}
+.finds[hidden] { display: none; }
+.finds li {
   display: flex;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 8px;
+  border-radius: 2px;
+  cursor: default;
+  overflow-wrap: anywhere;
 }
-.detail legend {
-  float: left; width: 100%;
-  padding: 0;
-  font-size: 12px; color: var(--ink-muted);
-  margin-bottom: 6px;
-}
-.detail label {
-  flex: 1;
-  position: relative;
-  border: 1px solid var(--rule);
-  margin-left: -1px;
-}
-.detail label:first-of-type { margin-left: 0; border-radius: 3px 0 0 3px; }
-.detail label:last-of-type { border-radius: 0 3px 3px 0; }
-.detail input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
-.detail span {
-  display: block;
-  padding: 7px 4px;
-  text-align: center;
-  font-size: 13px;
-  color: var(--ink-muted);
-}
-.detail input:checked + span { background: var(--ink); color: var(--paper); }
-.detail input:focus-visible + span { outline: 2px solid var(--brass); outline-offset: -2px; }
+.finds .count { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.finds li:hover, .finds li:focus-visible, .finds li.on { background: rgba(211, 169, 97, .22); outline: none; }
+.finds .none { color: var(--ink-muted); font-style: normal; }
 
 .facts { margin: 0 0 20px; font-size: 13px; }
 .facts div {
@@ -224,6 +290,16 @@ button:disabled { opacity: .45; cursor: default; }
 .again { width: 100%; justify-content: center; background: var(--ink); color: var(--paper); }
 
 /* ---------- small screens ---------- */
+
+@media (max-width: 1100px) {
+  .room { grid-template-columns: minmax(0, 1fr) 320px; }
+  .guide {
+    grid-column: 1 / -1;
+    position: static;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 18px 24px;
+  }
+}
 
 @media (max-width: 860px) {
   .bar { grid-template-columns: 1fr; padding: 20px 16px 0; }

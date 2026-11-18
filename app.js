@@ -231,7 +231,7 @@ async function loadModel(fromSaved) {
     }
     showStorage();
     if (imageSrc) run();
-    else setCaption('Add a photo. Its caption appears here.', 'waiting');
+    else setCaption('Add a photo to start.', 'waiting');
   } catch (err) {
     console.error(err);
     model = processor = null;
@@ -262,7 +262,7 @@ $('forget').onclick = async () => {
   $('device').disabled = $('dtype').disabled = false;
   $('load').disabled = false;
   await refreshButton();
-  setStatus('Saved model removed. Download it again to caption photos.');
+  setStatus('Saved model removed. Download it again to use the tools.');
   showStorage();
 };
 
@@ -294,16 +294,121 @@ $('forget').onclick = async () => {
   } else setStatus("The model isn't saved in this browser yet. Download it once and it stays here.");
 })();
 
+
+// ---------- the tools ----------
+// Every Florence-2 task, grouped by what you give the model besides the photo.
+//   kind: how to read the answer. text = words; box = rectangles; quad = 4-corner text boxes;
+//         poly = outlines; auto = rectangles or outlines, whichever comes back.
+//   ask:  needs typed text.  area: needs an area drawn on the photo.
+const TOOLS = [
+  { group: 'Describe the photo', items: [
+    { id: '<CAPTION>', name: 'Short caption', verb: 'Caption photo', kind: 'text', tokens: 80 },
+    { id: '<DETAILED_CAPTION>', name: 'Detailed caption', verb: 'Caption photo', kind: 'text', tokens: 160 },
+    { id: '<MORE_DETAILED_CAPTION>', name: 'A paragraph', verb: 'Caption photo', kind: 'text', tokens: 256 },
+  ] },
+  { group: 'Read text', items: [
+    { id: '<OCR>', name: 'All the text', verb: 'Read text', kind: 'text', tokens: 512 },
+    { id: '<OCR_WITH_REGION>', name: 'Text, line by line', verb: 'Read text', kind: 'quad', noun: ['line', 'lines'] },
+  ] },
+  { group: 'Find things', items: [
+    { id: '<OD>', name: 'Objects', verb: 'Find objects', kind: 'box', noun: ['object', 'objects'] },
+    { id: '<REGION_PROPOSAL>', name: 'Possible regions', verb: 'Find regions', kind: 'box', noun: ['region', 'regions'] },
+  ] },
+  { group: 'Find what you type', items: [
+    { id: '<CAPTION_TO_PHRASE_GROUNDING>', name: 'Phrases in a sentence', verb: 'Find phrases', kind: 'box',
+      noun: ['match', 'matches'], ask: 'A sentence about the photo', placeholder: 'A woman sits on a fence next to a dog' },
+    { id: '<OPEN_VOCABULARY_DETECTION>', name: 'Anything you name', verb: 'Find it', kind: 'auto',
+      noun: ['match', 'matches'], ask: 'What to find', placeholder: 'lighthouse' },
+    { id: '<REFERRING_EXPRESSION_SEGMENTATION>', name: 'Outline what you describe', verb: 'Outline it', kind: 'poly',
+      noun: ['outline', 'outlines'], ask: 'What to outline', placeholder: 'the dog' },
+  ] },
+  { group: 'Ask about an area you draw', items: [
+    { id: '<REGION_TO_CATEGORY>', name: 'Name it', verb: 'Name the area', kind: 'text', area: true, tokens: 40 },
+    { id: '<REGION_TO_DESCRIPTION>', name: 'Describe it', verb: 'Describe the area', kind: 'text', area: true, tokens: 120 },
+    { id: '<REGION_TO_OCR>', name: 'Read its text', verb: 'Read the area', kind: 'text', area: true, tokens: 256 },
+    { id: '<REGION_TO_SEGMENTATION>', name: 'Outline what’s inside', verb: 'Outline the area', kind: 'poly',
+      area: true, noun: ['outline', 'outlines'] },
+  ] },
+];
+const ALL = TOOLS.flatMap((g) => g.items);
+const TOOL_PREF = 'caption-test:tool';
+const SVGNS = 'http://www.w3.org/2000/svg';
+
+let tool = ALL[0];
+let rawImage = null, rawFor = null; // decoded photo for the model, reused between runs
+let area = null;                    // [x1, y1, x2, y2] in photo pixels
+let finds = [];                     // shapes from the last run
+
+// Build the guide rail.
+for (const [gi, g] of TOOLS.entries()) {
+  const box = document.createElement('div');
+  box.className = 'group';
+  box.setAttribute('role', 'radiogroup');
+  box.setAttribute('aria-labelledby', `g${gi}`);
+  const h = document.createElement('h2');
+  h.id = `g${gi}`;
+  h.textContent = g.group;
+  box.appendChild(h);
+  for (const t of g.items) {
+    const l = document.createElement('label');
+    l.className = 'tool';
+    l.innerHTML = '<input type="radio" name="tool"><span></span>';
+    l.querySelector('input').value = t.id;
+    l.querySelector('span').textContent = t.name;
+    box.appendChild(l);
+  }
+  $('guide').appendChild(box);
+}
+
+function pickTool(id, { silent = false } = {}) {
+  tool = ALL.find((t) => t.id === id) || ALL[0];
+  document.querySelector(`input[name="tool"][value="${CSS.escape(tool.id)}"]`).checked = true;
+  try { localStorage.setItem(TOOL_PREF, tool.id); } catch {}
+  $('toolName').textContent = tool.name;
+  $('run').textContent = tool.verb;
+  $('ask').hidden = !tool.ask;
+  if (tool.ask) {
+    $('askLabel').textContent = tool.ask;
+    $('askInput').placeholder = tool.placeholder;
+  }
+  $('hint').hidden = !tool.area;
+  $('drop').classList.toggle('drawing', !!tool.area && !!imageSrc);
+  if (!tool.area) area = null;
+  clearResult();
+  if (silent) return;
+  if (tool.ask && !$('askInput').value.trim()) {
+    setCaption(`Type ${tool.ask.toLowerCase()}, then press Enter.`, 'waiting');
+    $('askInput').focus();
+  } else if (tool.area && !area) {
+    setCaption(imageSrc ? 'Drag on the photo to mark an area.' : 'Add a photo, then drag on it to mark an area.', 'waiting');
+  } else run();
+}
+
+$('guide').addEventListener('change', (e) => { if (e.target.name === 'tool') pickTool(e.target.value); });
+$('ask').onsubmit = (e) => { e.preventDefault(); run(); };
+
+// ---------- photo ----------
 function setImage(src) {
   imageSrc = src;
-  const img = new Image();
-  img.alt = 'Photo being captioned';
-  img.src = src;
-  $('mat').replaceChildren(img);
+  rawImage = null;
+  area = null;
+  $('photo').src = src;
+  $('stage').hidden = false;
+  $('empty').hidden = true;
+  $('drop').classList.add('has-photo');
+  $('drop').classList.toggle('drawing', !!tool.area);
   $('time').textContent = $('ran').textContent = $('size').textContent = '–';
-  if (model) run();
-  else setCaption('Photo ready. Load the model to caption it.', 'waiting');
+  clearResult();
+  if (!model) setCaption('Photo ready. Load the model to start.', 'waiting');
+  else if (tool.area) setCaption('Drag on the photo to mark an area.', 'waiting');
+  else run();
 }
+
+$('photo').onload = () => {
+  const img = $('photo');
+  $('marks').setAttribute('viewBox', `0 0 ${img.naturalWidth} ${img.naturalHeight}`);
+  drawMarks();
+};
 
 function readFile(f) {
   if (!f) return;
@@ -316,8 +421,11 @@ function readFile(f) {
 }
 
 const drop = $('drop');
-drop.onclick = () => $('file').click();
-drop.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('file').click(); } };
+// The empty frame opens the file chooser; once a photo hangs there, clicks belong to the photo.
+drop.onclick = () => { if (!imageSrc) $('file').click(); };
+drop.onkeydown = (e) => {
+  if (!imageSrc && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); $('file').click(); }
+};
 drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
 drop.ondragleave = () => drop.classList.remove('over');
 drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); readFile(e.dataTransfer.files[0]); };
@@ -326,43 +434,264 @@ $('file').onchange = (e) => {
   readFile(e.target.files[0]);
   e.target.value = ''; // so picking the same file again still fires change
 };
-$('file').onclick = (e) => e.stopPropagation(); // don't bubble back into the frame's click handler
+$('file').onclick = (e) => e.stopPropagation();
 $('urlForm').onsubmit = (e) => {
   e.preventDefault();
   const u = $('url').value.trim();
   if (u) setImage(u);
 };
 
-const task = () => document.querySelector('input[name="task"]:checked').value;
-for (const r of document.querySelectorAll('input[name="task"]')) {
-  r.onchange = () => { if (model && imageSrc) run(); };
+// ---------- drawing an area ----------
+function toPhoto(e) {
+  const img = $('photo'), r = img.getBoundingClientRect();
+  const x = Math.min(Math.max(e.clientX - r.left, 0), r.width);
+  const y = Math.min(Math.max(e.clientY - r.top, 0), r.height);
+  return [x / r.width * img.naturalWidth, y / r.height * img.naturalHeight];
+}
+let dragFrom = null;
+$('stage').addEventListener('pointerdown', (e) => {
+  if (!tool.area || !imageSrc) return;
+  e.preventDefault();
+  $('stage').setPointerCapture(e.pointerId);
+  dragFrom = toPhoto(e);
+  area = [...dragFrom, ...dragFrom];
+  finds = [];
+  drawMarks();
+});
+$('stage').addEventListener('pointermove', (e) => {
+  if (!dragFrom) return;
+  const [x, y] = toPhoto(e);
+  area = [Math.min(dragFrom[0], x), Math.min(dragFrom[1], y), Math.max(dragFrom[0], x), Math.max(dragFrom[1], y)];
+  drawMarks();
+});
+$('stage').addEventListener('pointerup', () => {
+  if (!dragFrom) return;
+  dragFrom = null;
+  const img = $('photo');
+  const minSide = Math.min(img.naturalWidth, img.naturalHeight) * 0.02;
+  if (area[2] - area[0] < minSide || area[3] - area[1] < minSide) {
+    area = null;
+    drawMarks();
+    setCaption('That area is too small. Drag a bigger box on the photo.', 'waiting');
+    return;
+  }
+  run();
+});
+
+// Florence-2 takes an area as four location tokens, each 0–999 across the photo.
+function areaTokens(w, h) {
+  const q = (v, d) => Math.min(999, Math.max(0, Math.floor(v / d * 1000)));
+  const [x1, y1, x2, y2] = area;
+  return `<loc_${q(x1, w)}><loc_${q(y1, h)}><loc_${q(x2, w)}><loc_${q(y2, h)}>`;
 }
 
+// ---------- reading the answer ----------
+const clean = (s) => s.replace(/<\/?s>|<pad>/g, '');
+
+// Turn "label<loc_..>…" runs into shapes in photo pixels. (Transformers.js only parses boxes
+// and OCR quads; outline tasks throw "not yet implemented", so every shape is parsed here.)
+function parseShapes(raw, kind, w, h) {
+  const out = [];
+  let last = '';
+  for (const m of clean(raw).matchAll(/([^<]*)((?:<(?:loc_\d+|poly|\/poly|sep)>)+)/g)) {
+    const label = m[1].trim() || last;
+    last = label;
+    const polyMarked = /<poly>|<sep>/.test(m[2]);
+    for (const part of m[2].split(/<sep>|<poly>|<\/poly>/)) {
+      const n = [...part.matchAll(/<loc_(\d+)>/g)].map((x) => (Number(x[1]) + 0.5) / 1000);
+      const pts = [];
+      for (let i = 0; i + 1 < n.length; i += 2) pts.push([n[i] * w, n[i + 1] * h]);
+      // "auto" (find anything you name): unmarked runs of 2 or 4 points are one or two boxes; longer runs are outlines.
+      const asBoxes = kind === 'box' || (kind === 'auto' && !polyMarked && (pts.length === 2 || pts.length === 4));
+      if (asBoxes) {
+        for (let i = 0; i + 1 < pts.length; i += 2) out.push({ label, box: [...pts[i], ...pts[i + 1]] });
+      } else if (kind === 'quad') {
+        for (let i = 0; i + 3 < pts.length; i += 4) out.push({ label, poly: pts.slice(i, i + 4) });
+      } else if (pts.length >= 3) {
+        out.push({ label, poly: pts });
+      }
+    }
+  }
+  return out;
+}
+
+function topLeft(f) {
+  if (f.box) return [f.box[0], f.box[1]];
+  return [Math.min(...f.poly.map((p) => p[0])), Math.min(...f.poly.map((p) => p[1]))];
+}
+
+// ---------- drawing the marks ----------
+function shape(f) {
+  const g = document.createElementNS(SVGNS, 'g');
+  for (const cls of ['under', 'top']) {
+    let el;
+    if (f.box) {
+      el = document.createElementNS(SVGNS, 'rect');
+      const [x1, y1, x2, y2] = f.box;
+      el.setAttribute('x', x1); el.setAttribute('y', y1);
+      el.setAttribute('width', Math.max(1, x2 - x1)); el.setAttribute('height', Math.max(1, y2 - y1));
+    } else {
+      el = document.createElementNS(SVGNS, 'polygon');
+      el.setAttribute('points', f.poly.map((p) => p.join(',')).join(' '));
+    }
+    el.setAttribute('class', cls);
+    g.appendChild(el);
+  }
+  return g;
+}
+
+function drawMarks() {
+  const svg = $('marks'), tags = $('tags');
+  const img = $('photo');
+  svg.replaceChildren();
+  tags.replaceChildren();
+  if (!img.naturalWidth) return;
+  if (area) {
+    const g = shape({ box: area });
+    g.setAttribute('class', 'mark area');
+    svg.appendChild(g);
+  }
+  finds.forEach((f, i) => {
+    const g = shape(f);
+    g.setAttribute('class', `mark ${f.box ? 'box' : 'poly'}`);
+    g.dataset.i = i;
+    svg.appendChild(g);
+    // Paper tags name each find, except OCR lines (too many, and the text is listed anyway).
+    if (f.label && tool.kind !== 'quad') {
+      const [x, y] = topLeft(f);
+      const t = document.createElement('span');
+      t.className = 'tag';
+      t.dataset.i = i;
+      t.textContent = f.label;
+      t.style.left = `${x / img.naturalWidth * 100}%`;
+      t.style.top = `${y / img.naturalHeight * 100}%`;
+      if (y / img.naturalHeight < 0.06) t.classList.add('inside');
+      tags.appendChild(t);
+    }
+  });
+}
+
+// Light up one or more finds (by index); null clears.
+function highlight(idx) {
+  const on = idx !== null;
+  const set = new Set((on ? [].concat(idx) : []).map(String));
+  $('marks').classList.toggle('focus', on);
+  $('tags').classList.toggle('focus', on);
+  for (const el of document.querySelectorAll('.mark[data-i], .tag')) el.classList.toggle('on', set.has(el.dataset.i));
+}
+
+// One row per label ("car  15"), so repeated finds don't fill the list; pointing at a row
+// lights every mark with that label. Unlabelled finds (possible regions) keep a row each.
+function listFinds() {
+  const ul = $('finds');
+  ul.replaceChildren();
+  ul.hidden = !finds.length;
+  const rows = new Map();
+  finds.forEach((f, i) => {
+    const key = f.label || `\u0000${i}`;
+    if (!rows.has(key)) rows.set(key, { label: f.label, idx: [] });
+    rows.get(key).idx.push(i);
+  });
+  let n = 0;
+  for (const { label, idx } of rows.values()) {
+    n++;
+    const li = document.createElement('li');
+    li.tabIndex = 0;
+    const name = document.createElement('span');
+    name.textContent = label || `${tool.noun?.[0] ? tool.noun[0][0].toUpperCase() + tool.noun[0].slice(1) : 'Area'} ${n}`;
+    li.appendChild(name);
+    if (idx.length > 1) {
+      const count = document.createElement('span');
+      count.className = 'count';
+      count.textContent = idx.length;
+      count.setAttribute('aria-label', `${idx.length} found`);
+      li.appendChild(count);
+    }
+    li.onmouseenter = li.onfocus = () => { highlight(idx); li.classList.add('on'); };
+    li.onmouseleave = li.onblur = () => { highlight(null); li.classList.remove('on'); };
+    ul.appendChild(li);
+  }
+}
+
+function clearResult() {
+  finds = [];
+  $('finds').replaceChildren();
+  $('finds').hidden = true;
+  highlight(null);
+  drawMarks();
+}
+
+function summary(n) {
+  const [one, many] = tool.noun || ['thing', 'things'];
+  if (tool.kind === 'poly') {
+    if (!n) return tool.area ? "Couldn't outline anything in that area. Try a tighter box." : `Couldn't find “${$('askInput').value.trim()}” to outline. Try other words.`;
+    return tool.area ? 'Outlined what’s inside the area.' : `Outlined “${$('askInput').value.trim()}”.`;
+  }
+  if (!n) return tool.ask ? 'Nothing matched. Try other words.' : 'Nothing found in this photo.';
+  return `Found ${n} ${n === 1 ? one : many}.`;
+}
+
+// ---------- running a tool ----------
 async function run() {
   if (!model || !imageSrc) return;
-  if (busy) { rerun = true; return; } // a new photo or detail level arrived mid-run; do it next
+  if (tool.ask && !$('askInput').value.trim()) {
+    setCaption(`Type ${tool.ask.toLowerCase()}, then press Enter.`, 'waiting');
+    $('askInput').focus();
+    return;
+  }
+  if (tool.area && !area) { setCaption('Drag on the photo to mark an area.', 'waiting'); return; }
+  if (busy) { rerun = true; return; } // a new photo or tool arrived mid-run; do it next
   busy = true;
   $('run').disabled = true;
-  setCaption('Reading the photo…', 'waiting');
+  const t = tool;
+  finds = [];
+  listFinds();
+  highlight(null);
+  drawMarks();
+  setCaption('Looking at the photo…', 'waiting');
   const t0 = performance.now();
   try {
-    const t = task();
-    const image = await RawImage.fromURL(imageSrc);
-    const inputs = await processor(image, processor.construct_prompts(t));
-    const ids = await model.generate({ ...inputs, max_new_tokens: 120 });
-    const text = processor.batch_decode(ids, { skip_special_tokens: false })[0];
-    const out = processor.post_process_generation(text, t, image.size);
-    setCaption(String(out[t]).trim(), 'fresh');
+    if (rawFor !== imageSrc || !rawImage) { rawImage = await RawImage.fromURL(imageSrc); rawFor = imageSrc; }
+    const { width: w, height: h } = rawImage;
+    let prompt = t.id;
+    if (t.ask) prompt += $('askInput').value.trim();
+    if (t.area) prompt += areaTokens(w, h);
+    const inputs = await processor(rawImage, prompt);
+    const ids = await model.generate({ ...inputs, max_new_tokens: t.tokens ?? 1024 });
+    const raw = processor.batch_decode(ids, { skip_special_tokens: false })[0];
+    if (t !== tool) return; // tool changed mid-run; the queued run takes over
+
+    if (t.kind === 'text') {
+      const text = clean(raw).replace(/<loc_\d+>/g, '').trim() || 'No answer for this one.';
+      setCaption(text, 'fresh' + (text.length > 220 ? ' long' : ''));
+    } else {
+      finds = parseShapes(raw, t.kind, w, h);
+      if (t.kind === 'quad') {
+        // OCR: show the text itself; the marks show where each line sits.
+        setCaption(finds.length ? finds.map((f) => f.label).join('\n') : 'No text found in this photo.',
+          'fresh' + (finds.length > 3 ? ' long' : ''));
+      } else {
+        setCaption(summary(finds.length), 'fresh');
+      }
+      drawMarks();
+      if (t.kind !== 'poly' || finds.length > 1) listFinds();
+    }
     $('time').textContent = `${((performance.now() - t0) / 1000).toFixed(1)} s`;
     $('ran').textContent = loadedOn;
-    $('size').textContent = `${image.width} × ${image.height} px`;
+    $('size').textContent = `${w} × ${h} px`;
   } catch (err) {
     console.error(err);
     setCaption(`Couldn't read that photo: ${err.message}. If it's a URL, the site may block other pages from loading it; download it and choose the file instead.`, 'error');
+  } finally {
+    busy = false;
+    $('run').disabled = false;
+    if (rerun) { rerun = false; run(); }
   }
-  busy = false;
-  $('run').disabled = false;
-  if (rerun) { rerun = false; run(); }
 }
 $('run').onclick = run;
+
+// Start on the last tool used (short caption the first time).
+let startTool = ALL[0].id;
+try { startTool = localStorage.getItem(TOOL_PREF) || startTool; } catch {}
+pickTool(startTool, { silent: true });
 })();
